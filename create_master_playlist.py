@@ -11,11 +11,11 @@ import json
 from datetime import datetime
 
 
-def create_master_vgm_playlist(max_workers: int = 10):
+def create_master_vgm_playlist(max_workers: int = 3):
     """Create a master playlist with all VGM tracks
 
     Args:
-        max_workers: Number of concurrent threads for Spotify search (default: 10)
+        max_workers: Number of concurrent threads for Spotify search (default: 3)
     """
     print("🎮 VGM-Spotify Bridge - Master Playlist Creator")
     print("=" * 60)
@@ -25,7 +25,7 @@ def create_master_vgm_playlist(max_workers: int = 10):
     vgm_extractor = VipVGMExtractor()
 
     print("🎵 Initializing Spotify integration...")
-    spotify = SpotifyVGMIntegrator()
+    spotify = SpotifyVGMIntegrator(enable_genre_filtering=True)
 
     # Get all VGM tracks (this will only run once)
     print("\n🎵 Fetching all VGM tracks from VipVGM...")
@@ -62,6 +62,11 @@ def create_master_vgm_playlist(max_workers: int = 10):
     )
     found_tracks = search_results["found"]
     not_found_tracks = search_results["not_found"]
+
+    # Save genre analysis data
+    spotify.save_genre_analysis(
+        f"vgm_genre_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
 
     if found_tracks:
         # Create playlist directly with the already-found tracks (no second search!)
@@ -120,7 +125,7 @@ if __name__ == "__main__":
     # max_workers=8: Balanced (might hit some limits)
     # max_workers=10+: Too aggressive (will hit rate limits)
 
-    results = create_master_vgm_playlist(max_workers=8)
+    results = create_master_vgm_playlist(max_workers=3)
     if results:
         print(
             f"\n🎯 Your ultimate VGM playlist is ready with {results['found_count']} tracks!"

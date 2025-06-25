@@ -16,6 +16,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import logging
+import json
+from datetime import datetime
 
 # Suppress noisy warnings from spotipy and urllib3
 logging.getLogger("spotipy").setLevel(logging.ERROR)
@@ -27,13 +29,18 @@ load_dotenv("config.env")
 
 
 class SpotifyVGMIntegrator:
-    def __init__(self):
+    def __init__(self, market: str = "US", enable_genre_filtering: bool = True):
         """Initialize Spotify client with OAuth"""
         self.client_id = os.getenv("SPOTIFY_CLIENT_ID")
         self.client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
         self.redirect_uri = os.getenv(
             "SPOTIFY_REDIRECT_URI", "http://localhost:8080/callback"
         )
+
+        # Market to use for searches (default: US for consistent VGM results)
+        self.market = market
+        # Enable/disable genre filtering (can be disabled for faster processing)
+        self.enable_genre_filtering = enable_genre_filtering
 
         if not all([self.client_id, self.client_secret]):
             raise ValueError(
@@ -55,11 +62,72 @@ class SpotifyVGMIntegrator:
         # Get current user info
         self.user_id = self.sp.current_user()["id"]
         print(f"🎵 Connected to Spotify as: {self.user_id}")
+        print(f"🌍 Using market: {self.market} for searches")
+        if not self.enable_genre_filtering:
+            print("⚡ Genre filtering disabled for faster processing")
 
         # Thread-safe lock only for results collection
         self._results_lock = threading.Lock()
         # Semaphore to limit concurrent API calls (much more conservative)
         self._api_semaphore = threading.Semaphore(5)  # Only 5 concurrent requests
+
+        # Track genre analysis data
+        self.genre_analysis = {
+            "tracks_analyzed": 0,
+            "genre_distribution": {},
+            "vgm_scores": [],
+            "rejected_tracks": [],
+        }
+
+        # Non-VGM genres to filter out
+        self.non_vgm_genres = {
+            "christmas",
+            "xmas",
+            "holiday",
+            "pop",
+            "rock",
+            "country",
+            "blues",
+            "hip hop",
+            "rap",
+            "r&b",
+            "soul",
+            "funk",
+            "disco",
+            "reggae",
+            "ska",
+            "latin",
+            "salsa",
+            "bachata",
+            "reggaeton",
+            "classical",
+            "opera",
+            "chamber",
+            "orchestra",
+            "symphony",
+            "punk",
+            "indie",
+            "alternative",
+            "grunge",
+            "emo",
+            "folk",
+            "bluegrass",
+            "world",
+            "new age",
+            "christian",
+            "gospel",
+            "worship",
+            "ccm",
+            "adult standards",
+            "easy listening",
+            "lounge",
+            "comedy",
+            "spoken word",
+            "podcast",
+            "children",
+            "kids",
+            "nursery",
+        }
 
     def search_track(
         self, track_name: str, artist: str = "", album: str = "", game_title: str = ""
@@ -124,20 +192,46 @@ class SpotifyVGMIntegrator:
                 # Much longer delay to be respectful to the API
                 time.sleep(0.2)  # 200ms delay - much more conservative
 
-                results = self.sp.search(q=query, type="track", limit=limit)
+                # Use US market for more consistent VGM results (avoids local bias)
+                results = self.sp.search(
+                    q=query, type="track", limit=limit, market=self.market
+                )
                 tracks = results["tracks"]["items"]
 
-                if tracks:
-                    # Return the first result (most relevant)
-                    track = tracks[0]
-                    return {
-                        "id": track["id"],
-                        "name": track["name"],
-                        "artists": [artist["name"] for artist in track["artists"]],
-                        "album": track["album"]["name"],
-                        "uri": track["uri"],
-                        "external_urls": track["external_urls"],
-                    }
+                if not tracks:
+                    return None
+
+                # Filter tracks by genre likelihood (if enabled)
+                if self.enable_genre_filtering:
+                    vgm_candidates = []
+                    for track in tracks:
+                        is_vgm, confidence = self._is_likely_vgm(track)
+                        if is_vgm:
+                            vgm_candidates.append((track, confidence))
+
+                    if not vgm_candidates:
+                        # No VGM candidates found
+                        print(f"⚠️  No VGM tracks found for query: {query}")
+                        return None
+
+                    # Sort by confidence and return the best match
+                    vgm_candidates.sort(key=lambda x: x[1], reverse=True)
+                    best_track = vgm_candidates[0][0]
+                    best_confidence = vgm_candidates[0][1]
+                else:
+                    # No genre filtering - just return the first track
+                    best_track = tracks[0]
+                    best_confidence = 0.5  # Default confidence when no filtering
+
+                return {
+                    "id": best_track["id"],
+                    "name": best_track["name"],
+                    "artists": [artist["name"] for artist in best_track["artists"]],
+                    "album": best_track["album"]["name"],
+                    "uri": best_track["uri"],
+                    "external_urls": best_track["external_urls"],
+                    "vgm_confidence": best_confidence,  # Add VGM confidence score
+                }
 
         except Exception as e:
             print(f"❌ Search error for '{query}': {e}")
@@ -156,11 +250,19 @@ class SpotifyVGMIntegrator:
     def _find_best_fuzzy_match(
         self, target_name: str, tracks: List[Dict], target_artist: str = ""
     ) -> Optional[Dict]:
-        """Find best match using fuzzy string matching"""
+        """Find best match using fuzzy string matching with genre filtering"""
         best_score = 0
         best_track = None
 
         for track in tracks:
+            # First check if it's likely VGM (if genre filtering enabled)
+            if self.enable_genre_filtering:
+                is_vgm, genre_confidence = self._is_likely_vgm(track)
+                if not is_vgm:
+                    continue  # Skip non-VGM tracks
+            else:
+                genre_confidence = 0.5  # Default confidence when no filtering
+
             # Calculate name similarity
             name_score = fuzz.ratio(target_name.lower(), track["name"].lower())
 
@@ -174,9 +276,12 @@ class SpotifyVGMIntegrator:
                     artist_bonus = max(artist_bonus, artist_score)
 
             # Combined score (name is more important)
-            total_score = name_score * 0.7 + artist_bonus * 0.3
+            # Include genre confidence in the scoring
+            total_score = name_score * 0.6 + artist_bonus * 0.3 + genre_confidence * 10
 
-            if total_score > best_score and total_score > 60:  # Minimum threshold
+            if (
+                total_score > best_score and name_score > 70
+            ):  # Raised threshold from 60 to 70
                 best_score = total_score
                 best_track = {
                     "id": track["id"],
@@ -186,6 +291,7 @@ class SpotifyVGMIntegrator:
                     "uri": track["uri"],
                     "external_urls": track["external_urls"],
                     "match_score": total_score,
+                    "vgm_confidence": genre_confidence,  # Add VGM confidence score
                 }
 
         return best_track
@@ -423,6 +529,298 @@ class SpotifyVGMIntegrator:
                 print(f"⚠️  {len(not_found)} tracks were not found on Spotify")
 
         return playlist_id
+
+    def get_user_playlists(self, limit: int = 50) -> List[Dict]:
+        """
+        Get current user's playlists
+
+        Args:
+            limit: Maximum number of playlists to retrieve
+
+        Returns:
+            List of playlist dictionaries
+        """
+        try:
+            playlists = []
+            results = self.sp.current_user_playlists(limit=limit)
+
+            while results:
+                for playlist in results["items"]:
+                    # Only include playlists owned by the current user
+                    if playlist["owner"]["id"] == self.user_id:
+                        playlists.append(
+                            {
+                                "id": playlist["id"],
+                                "name": playlist["name"],
+                                "tracks": playlist["tracks"]["total"],
+                                "description": playlist.get("description", ""),
+                                "public": playlist["public"],
+                                "url": playlist["external_urls"]["spotify"],
+                            }
+                        )
+
+                # Check if there are more playlists
+                if results["next"]:
+                    results = self.sp.next(results)
+                else:
+                    break
+
+            return playlists
+
+        except Exception as e:
+            print(f"❌ Error getting playlists: {e}")
+            return []
+
+    def delete_playlist(self, playlist_id: str) -> bool:
+        """
+        Delete (unfollow) a playlist
+
+        Args:
+            playlist_id: The Spotify playlist ID to delete
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Spotify doesn't have a direct delete API, but unfollowing your own playlist deletes it
+            self.sp.current_user_unfollow_playlist(playlist_id)
+            print(f"✅ Successfully deleted playlist")
+            return True
+
+        except Exception as e:
+            print(f"❌ Error deleting playlist: {e}")
+            return False
+
+    def save_genre_analysis(self, filename: str = "vgm_genre_analysis.json"):
+        """
+        Save the genre analysis data to a JSON file
+
+        Args:
+            filename: Name of the file to save to
+        """
+        analysis_data = {
+            "analysis_date": datetime.now().isoformat(),
+            "total_tracks_analyzed": self.genre_analysis["tracks_analyzed"],
+            "genre_distribution": dict(
+                sorted(
+                    self.genre_analysis["genre_distribution"].items(),
+                    key=lambda x: x[1],
+                    reverse=True,
+                )
+            ),
+            "vgm_confidence_scores": sorted(
+                self.genre_analysis["vgm_scores"],
+                key=lambda x: x["confidence"],
+                reverse=True,
+            ),
+            "rejected_tracks": self.genre_analysis["rejected_tracks"],
+            "confidence_summary": {
+                "high_confidence_95": len(
+                    [
+                        s
+                        for s in self.genre_analysis["vgm_scores"]
+                        if s["confidence"] >= 0.95
+                    ]
+                ),
+                "good_confidence_80": len(
+                    [
+                        s
+                        for s in self.genre_analysis["vgm_scores"]
+                        if 0.8 <= s["confidence"] < 0.95
+                    ]
+                ),
+                "medium_confidence_60": len(
+                    [
+                        s
+                        for s in self.genre_analysis["vgm_scores"]
+                        if 0.6 <= s["confidence"] < 0.8
+                    ]
+                ),
+                "low_confidence": len(
+                    [
+                        s
+                        for s in self.genre_analysis["vgm_scores"]
+                        if s["confidence"] < 0.6
+                    ]
+                ),
+            },
+        }
+
+        with open(filename, "w", encoding="utf-8") as f:
+            json.dump(analysis_data, f, indent=2, ensure_ascii=False)
+
+        print(f"\n📊 Genre analysis saved to: {filename}")
+        print(f"   - Tracks analyzed: {analysis_data['total_tracks_analyzed']}")
+        print(f"   - Unique genres found: {len(analysis_data['genre_distribution'])}")
+        print(f"   - Rejected tracks: {len(analysis_data['rejected_tracks'])}")
+
+    def _is_likely_vgm(self, track: Dict) -> Tuple[bool, float]:
+        """
+        Check if a track is likely video game music based on artist genres
+
+        Returns:
+            Tuple of (is_likely_vgm, confidence_score)
+        """
+        try:
+            # Get artist IDs
+            artist_ids = [artist["id"] for artist in track.get("artists", [])]
+            if not artist_ids:
+                return True, 0.5  # No artists, can't tell
+
+            # Fetch artist information with genres
+            with self._api_semaphore:
+                time.sleep(0.1)  # Rate limiting
+                artists_data = self.sp.artists(artist_ids)
+
+            # Collect all genres
+            all_genres = []
+            artist_names = []
+            for artist in artists_data.get("artists", []):
+                all_genres.extend(artist.get("genres", []))
+                artist_names.append(artist.get("name", "Unknown"))
+
+            # Update genre distribution
+            with self._results_lock:
+                self.genre_analysis["tracks_analyzed"] += 1
+                for genre in all_genres:
+                    self.genre_analysis["genre_distribution"][genre] = (
+                        self.genre_analysis["genre_distribution"].get(genre, 0) + 1
+                    )
+
+            track_info = {
+                "name": track.get("name", "Unknown"),
+                "artists": artist_names,
+                "album": track.get("album", {}).get("name", "Unknown"),
+                "genres": all_genres,
+            }
+
+            if not all_genres:
+                # No genre info, but if it has "soundtrack" or "game" in album name, probably VGM
+                album_name = track.get("album", {}).get("name", "").lower()
+                if any(
+                    keyword in album_name
+                    for keyword in ["soundtrack", "ost", "game", "vgm"]
+                ):
+                    confidence = 0.8
+                    with self._results_lock:
+                        self.genre_analysis["vgm_scores"].append(
+                            {
+                                **track_info,
+                                "confidence": confidence,
+                                "reason": "Album name contains VGM keywords",
+                            }
+                        )
+                    return True, confidence
+                confidence = 0.5
+                with self._results_lock:
+                    self.genre_analysis["vgm_scores"].append(
+                        {
+                            **track_info,
+                            "confidence": confidence,
+                            "reason": "No genre info available",
+                        }
+                    )
+                return True, confidence  # No genre info, can't tell for sure
+
+            # Check for VGM-positive indicators
+            vgm_indicators = {
+                "soundtrack",
+                "video game",
+                "game",
+                "vgm",
+                "chiptune",
+                "8bit",
+                "8-bit",
+                "nintendocore",
+                "ost",
+                "score",
+            }
+
+            # Check for Japanese music (often VGM)
+            japanese_indicators = {
+                "j-pop",
+                "jpop",
+                "j-rock",
+                "jrock",
+                "anime",
+                "japanese",
+            }
+
+            genre_text = " ".join(all_genres).lower()
+
+            # Strong VGM indicators
+            if any(indicator in genre_text for indicator in vgm_indicators):
+                confidence = 0.95
+                with self._results_lock:
+                    self.genre_analysis["vgm_scores"].append(
+                        {
+                            **track_info,
+                            "confidence": confidence,
+                            "reason": f"Contains VGM genre indicators: {[i for i in vgm_indicators if i in genre_text]}",
+                        }
+                    )
+                return True, confidence
+
+            # Japanese music is often VGM
+            if any(indicator in genre_text for indicator in japanese_indicators):
+                confidence = 0.8
+                with self._results_lock:
+                    self.genre_analysis["vgm_scores"].append(
+                        {
+                            **track_info,
+                            "confidence": confidence,
+                            "reason": f"Contains Japanese music indicators: {[i for i in japanese_indicators if i in genre_text]}",
+                        }
+                    )
+                return True, confidence
+
+            # Check for non-VGM genres
+            for genre in all_genres:
+                genre_lower = genre.lower()
+                for non_vgm in self.non_vgm_genres:
+                    if non_vgm in genre_lower:
+                        # Special case: orchestral/classical can be VGM if album suggests it
+                        album_name = track.get("album", {}).get("name", "").lower()
+                        if any(
+                            keyword in album_name
+                            for keyword in ["soundtrack", "ost", "game", "vgm"]
+                        ):
+                            confidence = 0.7
+                            with self._results_lock:
+                                self.genre_analysis["vgm_scores"].append(
+                                    {
+                                        **track_info,
+                                        "confidence": confidence,
+                                        "reason": f"Has non-VGM genre '{genre}' but album suggests VGM",
+                                    }
+                                )
+                            return True, confidence
+                        # Track rejected
+                        with self._results_lock:
+                            self.genre_analysis["rejected_tracks"].append(
+                                {
+                                    **track_info,
+                                    "rejected_for": non_vgm,
+                                    "matched_genre": genre,
+                                }
+                            )
+                        return False, 0.1
+
+            # No strong indicators either way
+            confidence = 0.6
+            with self._results_lock:
+                self.genre_analysis["vgm_scores"].append(
+                    {
+                        **track_info,
+                        "confidence": confidence,
+                        "reason": "No strong indicators either way",
+                    }
+                )
+            return True, confidence
+
+        except Exception as e:
+            print(f"⚠️  Error checking genres: {e}")
+            return True, 0.5  # Default to including if error
 
 
 def main():

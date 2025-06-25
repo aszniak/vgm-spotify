@@ -1,15 +1,25 @@
 # 🎮 VGM-Spotify Bridge
 
-A Python tool that creates ultimate Spotify playlists from the entire VipVGM.net video game music collection. Automatically searches for and matches 1,700+ VGM tracks on Spotify using intelligent fuzzy matching and multithreaded processing.
+Create Spotify playlists from VipVGM.net's collection of video game music!
 
-## ✨ Features
+## 🚀 Features
 
-- **🎵 Complete VGM Collection**: Extracts 1,779 high-quality VGM tracks from VipVGM.net
-- **🚀 Fast Multithreaded Search**: Uses concurrent API calls to process tracks in ~5-6 minutes
-- **🧠 Intelligent Matching**: Multiple search strategies with fuzzy matching for maximum success rate
-- **📊 Detailed Results**: Comprehensive JSON reports with found/not-found tracks and statistics
-- **🔄 Rate Limit Handling**: Smart rate limiting and automatic retry mechanisms
-- **🎯 One-Click Playlists**: Creates ready-to-use Spotify playlists automatically
+- 🎵 Extracts high-quality VGM tracks from VipVGM.net (1,779 tracks!)
+- 🔍 Smart track matching on Spotify with fuzzy search
+- 🎯 **Intelligent genre filtering** to avoid non-VGM tracks (Christmas, pop, country, etc.)
+- 🎮 Preserves legitimate VGM genres (electronic, techno, metal, jazz, orchestral)
+- 🌍 Location-independent search (uses US market by default)
+- ⚡ Multithreaded processing for faster playlist creation
+- 📊 Detailed progress tracking and results reporting
+- 📈 Genre analysis reports for transparency
+- 🗑️ Playlist management tools (delete unwanted playlists)
+- 🎨 Beautiful console output with emojis
+
+## 📋 Prerequisites
+
+- Python 3.8 or higher
+- Spotify Premium account (free accounts work too, but Premium is recommended)
+- Spotify Developer Application (free)
 
 ## 🛠️ Setup
 
@@ -52,15 +62,17 @@ python3 create_master_playlist.py
 This will:
 
 1. Extract all VGM tracks from VipVGM.net (1,779 tracks)
-2. Search for each track on Spotify using 8 concurrent threads
-3. Create a Spotify playlist with all found tracks
-4. Generate detailed results in JSON format
+2. Search for each track on Spotify using intelligent genre filtering
+3. Use 3 concurrent threads for safe, reliable processing
+4. Create a Spotify playlist with all found tracks
+5. Generate detailed results and genre analysis in JSON format
 
 ### Expected Results
 
-- **Processing Time**: ~5-6 minutes
+- **Processing Time**: ~8-10 minutes (with genre filtering for quality)
 - **Success Rate**: ~85-90% of tracks found on Spotify
-- **Final Playlist**: 1,400-1,600 tracks ready to play!
+- **Final Playlist**: 1,400-1,600 high-quality VGM tracks ready to play!
+- **Bonus**: Genre analysis report to understand track filtering
 
 ## 📁 Project Structure
 
@@ -68,7 +80,8 @@ This will:
 vgm-spotify/
 ├── create_master_playlist.py   # Main script - creates ultimate playlist
 ├── vgm_extractor.py           # Extracts tracks from VipVGM roster.json
-├── spotify_integration.py     # Spotify API integration with threading
+├── spotify_integration.py     # Spotify API integration with threading + genre filtering
+├── delete_playlist.py         # Utility to delete Spotify playlists
 ├── requirements.txt           # Python dependencies
 ├── config.env.example        # Configuration template
 ├── .gitignore                # Git ignore rules
@@ -80,15 +93,26 @@ vgm-spotify/
 You can adjust threading performance in `create_master_playlist.py`:
 
 ```python
-# Conservative (safe, ~8min)
+# Conservative (safe, ~10min) - Default
 results = create_master_vgm_playlist(max_workers=3)
 
-# Balanced (recommended, ~5-6min)
+# Balanced (faster, ~8min) - May encounter some rate limits
 results = create_master_vgm_playlist(max_workers=5)
 
-# Aggressive (faster but may hit rate limits)
+# Aggressive (fastest, ~5-6min) - Higher chance of rate limits
 results = create_master_vgm_playlist(max_workers=8)
 ```
+
+### Additional Tools
+
+**Delete unwanted playlists:**
+
+```bash
+python3 delete_playlist.py
+```
+
+- Interactive tool to view and delete your Spotify playlists
+- Useful for cleaning up test playlists
 
 ## 📊 Output
 
@@ -101,10 +125,12 @@ The script generates:
 Example output:
 
 ```
-🔍 Searching for 1779 tracks on Spotify using 8 threads...
-🎵 Progress: 850/1779 (47.8%) | Found: 789 | Rate: 8.2 tracks/s | ETA: 1.9min
+🔍 Searching for 1779 tracks on Spotify using 3 threads...
+🎵 Progress: 850/1779 (47.8%) | Found: 789 | Rate: 2.9 tracks/s | ETA: 5.3min
+⚠️  No VGM tracks found for query: "Jingle Bells Christmas"
 🎉 Master playlist created successfully!
 ✅ Tracks found: 1456/1779 (81.8%)
+📊 Genre analysis saved to: vgm_genre_analysis_20231215_143022.json
 🌐 Spotify URL: https://open.spotify.com/playlist/abc123xyz
 ```
 
@@ -114,6 +140,8 @@ Example output:
 - **Rate Limits**: Script automatically handles Spotify API rate limits
 - **Large Dataset**: Processing 1,700+ tracks takes several minutes
 - **Internet Required**: Needs stable connection for API calls
+- **Genre Filtering**: Enabled by default for quality - filters out Christmas, pop, country music
+- **Processing Speed**: Quality over speed - genre filtering adds time but improves results
 
 ## 🎯 Why This Project?
 
